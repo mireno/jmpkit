@@ -12,7 +12,8 @@ import streamlit as st
 from jmpkit import (
     Dataset, load_any, add_channel_expr, add_channel_func,
     jmp_distribution_report, jmp_multivariate_panel_full,
-    fit_model, jmp_fit_and_plots, plot_xy_by_group
+    fit_model, jmp_fit_and_plots, plot_xy_by_group,
+    tag_fliers, get_fliers, set_flier_color, get_flier_color  # NEW
 )
 
 # ------------------ Small helpers for Streamlit ------------------
@@ -62,12 +63,7 @@ def _safe_num_cols(df: pd.DataFrame) -> List[str]:
     return list(df.select_dtypes(include=[np.number]).columns)
 
 def _show_fig(fig, *, width_px: int, dpi: int, caption: str | None = None):
-    """
-    Display a Matplotlib figure at a user-controlled pixel width and DPI
-    without modifying the figure object (no jmpkit edits).
-    """
     buf = io.BytesIO()
-    # Save at requested DPI; st.image will scale to width_px, preserving aspect ratio.
     fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
     buf.seek(0)
     st.image(buf, caption=caption, width=width_px)
@@ -132,15 +128,28 @@ with tab_data:
     st.dataframe(st.session_state["data"].summary(), use_container_width=True)
 
 # ---- Distribution tab ----
+# ---- Distribution tab ----
 with tab_dist:
     st.subheader("Distribution Report")
-    cols = st.multiselect("Columns (numeric suggested)", options=list(_df().columns), default=_safe_num_cols(_df())[:1])
-    if st.button("Run Distribution", disabled=len(cols) == 0):
-        for c in cols:
+    cols_sel = st.multiselect(
+        "Columns (numeric suggested)",
+        options=list(_df().columns),
+        default=_safe_num_cols(_df())[:1]
+    )
+
+    # Keep last results & UI state across reruns
+    if "last_dist" not in st.session_state:
+        st.session_state["last_dist"] = {}   # {channel: {"flier_index": [...], "bounds": (lo, hi)}}
+    if "tag_ui" not in st.session_state:
+        st.session_state["tag_ui"] = {}      # {channel: {"checked": bool, "color": "#RRGGBB"}}
+
+    # Compute once, only when button pressed
+    if st.button("Run Distribution", disabled=len(cols_sel) == 0):
+        st.session_state["last_dist"].clear()
+        for c in cols_sel:
             st.markdown(f"#### {c}")
             try:
-                # Call jmpkit as-is; only display size is controlled here
-                res = jmp_distribution_report(_df(), c)
+                res = jmp_distribution_report(_df(), c)  # no auto-tag here
                 _show_fig(res["fig_hist"], width_px=width_px, dpi=dpi, caption="Histogram + Fitted Normal")
                 _show_fig(res["fig_box"],  width_px=width_px, dpi=dpi, caption="Box Plot")
                 st.dataframe(res["quantiles_df"], use_container_width=True)
@@ -149,8 +158,65 @@ with tab_dist:
                 st.dataframe(res["fit_stats_df"], use_container_width=True)
                 st.dataframe(res["gof_summary_df"], use_container_width=True)
                 st.dataframe(res["ad_details_df"], use_container_width=True)
+
+                # remember flier indices for optional tagging
+                st.session_state["last_dist"][c] = {
+                    "flier_index": res.get("flier_index", []),
+                    "bounds": res.get("flier_bounds", (None, None)),
+                }
+
             except Exception as e:
                 st.warning(f"Skipping {c}: {e}")
+
+    # --- Per-channel tagging UI (in a form so edits don't apply until submitted) ---
+    if st.session_state["last_dist"]:
+        st.markdown("### Tagging Options for Selected Channels")
+
+        with st.form("tagging_form", clear_on_submit=False):
+            # Build per-channel controls
+            for c in cols_sel:
+                # ensure UI defaults exist
+                default_color = get_flier_color(c)
+                default_checked = len(get_fliers(c)) > 0
+                ui_state = st.session_state["tag_ui"].setdefault(
+                    c, {"checked": default_checked, "color": default_color}
+                )
+
+                colA, colB, colC, colD = st.columns([2, 2, 2, 6])
+                with colA:
+                    st.write(f"**{c}**")
+                with colB:
+                    ui_state["checked"] = st.checkbox(
+                        "Tag fliers", value=ui_state["checked"], key=f"tag_{c}"
+                    )
+                with colC:
+                    ui_state["color"] = st.color_picker(
+                        "Color", value=ui_state["color"], key=f"color_{c}"
+                    )
+                with colD:
+                    n_new = len(st.session_state["last_dist"].get(c, {}).get("flier_index", []))
+                    n_tag = len(get_fliers(c))
+                    st.caption(f"New detected: **{n_new}** — currently tagged: **{n_tag}**")
+
+            submitted = st.form_submit_button("Apply Tags")
+
+        if submitted:
+            applied_any = False
+            for c in cols_sel:
+                ui = st.session_state["tag_ui"][c]
+                # Persist color even if not tagging (so it sticks for later)
+                set_flier_color(c, ui["color"])
+                if ui["checked"]:
+                    idxs = st.session_state["last_dist"].get(c, {}).get("flier_index", [])
+                    tag_fliers(c, idxs, mode="set")
+                    applied_any = True
+                else:
+                    tag_fliers(c, [], mode="clear")
+
+            if applied_any:
+                st.success("Tags/colors applied. Plots will reflect these choices.")
+            else:
+                st.info("No channels tagged. (Any previous tags were cleared if unchecked.)")
 
 # ---- Multivariate tab ----
 with tab_multi:
@@ -238,7 +304,6 @@ with tab_fit:
     if persona == "partial_least_squares":
         extra_kwargs["n_components"] = st.number_input("PLS components", 1, 10, 2, 1)
 
-    # Run fit
     if st.button("Fit"):
         try:
             result = fit_model(
@@ -284,8 +349,6 @@ with tab_fit:
                 except Exception:
                     st.code(str(v), language="text")
 
-
-            # Show metrics
             if result.metrics:
                 st.markdown("#### Metrics")
                 try:
@@ -296,7 +359,6 @@ with tab_fit:
                 except Exception:
                     st.code(str(result.metrics), language="text")
 
-            # Diagnostic plots (only single-Y regression-like)
             if persona in ("standard_least_squares","glm","generalized_regression","stepwise") and (not multi_y):
                 st.markdown("#### Diagnostic Plots")
                 regressor = effects[0] if effects else None
@@ -318,7 +380,6 @@ with tab_fit:
 # ---- Plot Scatter tab ----
 with tab_plot_scatter:
     st.subheader("Fit Y by X (faceted)")
-
     cols_all = list(_df().columns)
     x = st.selectbox("X (predictor)", options=cols_all, index=0 if cols_all else None)
     y_opts = [c for c in cols_all if c != x]
@@ -327,7 +388,6 @@ with tab_plot_scatter:
     group = st.selectbox("Group (optional)", options=["(none)"] + cols_all, index=0)
     grp = None if group == "(none)" else group
 
-    # Optional layout knobs (keep minimal; you can remove these lines if not needed)
     ncols = st.slider("Facets per row", 1, 4, 3)
     h = st.slider("Facet height (inches)", 3.0, 6.0, 4.0)
     w = st.slider("Facet width (inches)", 3.0, 6.0, 4.0)
@@ -335,9 +395,4 @@ with tab_plot_scatter:
     run_disabled = (x is None) or (y is None)
     if st.button("Run XY Plot", disabled=run_disabled):
         fig, _ = plot_xy_by_group(_df(), x=x, y=y, group=grp, ncols=ncols, height=h, width=w)
-
-        # If you already use _show_fig elsewhere:
-        # _show_fig(fig, width_px=width_px, dpi=dpi, caption=f"{y} vs {x} by {group if grp else 'All'}")
-
-        # Or simply:
         st.pyplot(fig, use_container_width=True)

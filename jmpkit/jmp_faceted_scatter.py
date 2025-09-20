@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from .utils import flier_mask, flier_color_vector  # NEW import
 
 _HAVE_SM = False
 try:
@@ -24,6 +25,7 @@ def plot_xy_by_group(
     """
     Faceted scatter of y vs x, split by `group` with a best-fit line.
     All panels share the SAME y-axis (one scale), while each keeps its own x-axis.
+    Tagged rows for X or Y are colored with the per-channel color.
     Returns (fig, axes).
     """
     data = df[[c for c in [x, y, group] if c is not None]].dropna()
@@ -45,7 +47,6 @@ def plot_xy_by_group(
     ncols = max(1, min(ncols, n))
     nrows = int(np.ceil(n / ncols))
 
-    # sharey=True -> a single shared y-axis scale
     fig, axes = plt.subplots(
         nrows, ncols,
         figsize=(ncols * width, nrows * height),
@@ -62,7 +63,13 @@ def plot_xy_by_group(
             ax.set_visible(False)
             continue
 
-        ax.scatter(sub[x], sub[y], s=14, alpha=0.8)
+        # Color by registry (per-channel colors)
+        mfl, cols = flier_color_vector(sub, [x, y])
+        if mfl.any():
+            ax.scatter(sub[x][~mfl], sub[y][~mfl], s=14, alpha=0.8)
+            ax.scatter(sub[x][ mfl], sub[y][ mfl], s=14, alpha=0.95, c=cols)
+        else:
+            ax.scatter(sub[x], sub[y], s=14, alpha=0.8)
 
         # Best-fit line (+ 95% CI if statsmodels available)
         if len(sub) >= 2:
@@ -82,19 +89,15 @@ def plot_xy_by_group(
                 m, b = np.polyfit(sub[x].to_numpy(), sub[y].to_numpy(), 1)
                 ax.plot(xs, m * xs + b, linewidth=2)
 
-        # Apply common y-limits
         ax.set_ylim(y_min, y_max)
-
-        # Titles/labels
         ax.set_title(f"{y} vs {x}" if g is None else str(g))
         ax.set_xlabel(x)
-        if c == 0:  # only the leftmost column shows y tick labels
+        if c == 0:
             ax.set_ylabel(y)
         else:
             ax.set_ylabel("")
             ax.tick_params(axis="y", labelleft=False)
 
-    # Hide any unused axes
     for j in range(n, nrows * ncols):
         r, c = divmod(j, ncols)
         axes[r, c].set_visible(False)

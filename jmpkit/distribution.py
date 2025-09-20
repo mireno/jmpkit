@@ -8,7 +8,7 @@ def _normal_pdf(x, mu, sigma):
     sigma = max(float(sigma), 1e-12)
     return (1.0 / (sigma * sqrt(2 * pi))) * np.exp(-0.5 * ((x - mu) / sigma) ** 2)
 
-def jmp_distribution_report(df: pd.DataFrame, column: str) -> Dict[str, Any]:
+def jmp_distribution_report(df: pd.DataFrame, column: str, *, tag_fliers: bool = False) -> Dict[str, Any]:
     s = pd.to_numeric(df[column], errors="coerce")
     x = s.dropna().to_numpy()
     n, n_missing = x.size, int(s.isna().sum())
@@ -64,6 +64,13 @@ def jmp_distribution_report(df: pd.DataFrame, column: str) -> Dict[str, Any]:
                     (k*np.log(n) - 2*loglik)]
     })
 
+    # --- IQR-based fliers (JMP box-plot rule, 1.5*IQR) ---
+    q1, q3 = np.nanpercentile(x, 25), np.nanpercentile(x, 75)
+    iqr = q3 - q1
+    lo, hi = (q1 - 1.5*iqr), (q3 + 1.5*iqr)
+    f_mask = (s < lo) | (s > hi)
+    f_indices = list(s.index[f_mask.fillna(False)])
+
     # --- plots ---
     fig_hist = plt.figure()
     plt.hist(x, bins="auto", density=True)
@@ -77,7 +84,6 @@ def jmp_distribution_report(df: pd.DataFrame, column: str) -> Dict[str, Any]:
     plt.title(f"Box Plot — {column}"); plt.ylabel(column); plt.show()
 
     # --- Normality goodness-of-fit: Shapiro–Wilk & Anderson–Darling ---
-    # We keep this generic and robust: if SciPy is unavailable or n is out-of-range, we fill with NaN and a note.
     have_scipy = True
     shapiro_W = np.nan
     shapiro_p = np.nan
@@ -86,11 +92,10 @@ def jmp_distribution_report(df: pd.DataFrame, column: str) -> Dict[str, Any]:
     ad_note = ""
     ad_levels = [15.0, 10.0, 5.0, 2.5, 1.0]
     ad_crit = [np.nan]*len(ad_levels)
-    ad_reject_at_5 = np.nan  # boolean-ish (True/False/NaN)
+    ad_reject_at_5 = np.nan
 
     try:
         from scipy.stats import shapiro, anderson
-        # Shapiro–Wilk
         try:
             W, p = shapiro(x)
             shapiro_W, shapiro_p = float(W), float(p)
@@ -98,14 +103,11 @@ def jmp_distribution_report(df: pd.DataFrame, column: str) -> Dict[str, Any]:
         except Exception as e:
             shapiro_note = f"Shapiro–Wilk not computed: {e}"
 
-        # Anderson–Darling for normality
         try:
             ad_res = anderson(x, dist='norm')
             ad_stat = float(ad_res.statistic)
-            # SciPy returns fixed levels [15,10,5,2.5,1]; align to that order
             ad_levels = list(map(float, ad_res.significance_level))
             ad_crit = list(map(float, ad_res.critical_values))
-            # decision at 5% (closest to JMP-style default)
             if 5.0 in ad_levels:
                 idx5 = ad_levels.index(5.0)
                 ad_reject_at_5 = bool(ad_stat > ad_crit[idx5])
@@ -140,7 +142,7 @@ def jmp_distribution_report(df: pd.DataFrame, column: str) -> Dict[str, Any]:
                                    for cv in ad_crit ]
     })
 
-    # --- display all dataframes ---
+    # --- show dataframes in Jupyter contexts (no-op in Streamlit) ---
     display_dataframe_to_user(f"{column} — Quantiles", quantiles_df)
     display_dataframe_to_user(f"{column} — Summary Statistics", summary_df)
     display_dataframe_to_user(f"{column} — Fitted Normal Parameters", fit_params_df)
@@ -148,11 +150,20 @@ def jmp_distribution_report(df: pd.DataFrame, column: str) -> Dict[str, Any]:
     display_dataframe_to_user(f"{column} — Normality Tests (Shapiro & Anderson–Darling)", gof_summary_df)
     display_dataframe_to_user(f"{column} — Anderson–Darling Critical Values", ad_details_df)
 
+    # Optional: persist fliers for this channel
+    if tag_fliers and len(f_indices):
+        try:
+            from .utils import tag_fliers as _tag
+            _tag(column, f_indices, mode="set")
+        except Exception:
+            pass
+
     return dict(
         fig_hist=fig_hist, fig_box=fig_box,
         quantiles_df=quantiles_df, summary_df=summary_df,
         fit_params_df=fit_params_df, fit_stats_df=fit_stats_df,
-        gof_summary_df=gof_summary_df, ad_details_df=ad_details_df
+        gof_summary_df=gof_summary_df, ad_details_df=ad_details_df,
+        flier_bounds=(lo, hi), flier_index=f_indices
     )
 
 def jmp_distribution_all(df: pd.DataFrame, columns=None):

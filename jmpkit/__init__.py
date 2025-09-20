@@ -12,3 +12,5 @@ from .plots import jmp_fit_and_plots
 from .utils import display_dataframe_to_user
 from .jmp_faceted_scatter import plot_xy_by_group
 
+# NEW: expose tagging + colors to the app
+from .utils import tag_fliers, get_fliers, set_flier_color, get_flier_color
