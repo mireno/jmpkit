@@ -273,6 +273,8 @@ with tab_fit:
                             else:
                                 df = pd.DataFrame([content])
                             st.dataframe(df, use_container_width=True)
+                        else:
+                            st.code(str(content), language="text")   # or st.write(content)
                     continue
 
                 # Fallback: statsmodels Summary objects etc.

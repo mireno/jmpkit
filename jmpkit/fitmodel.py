@@ -205,6 +205,37 @@ def _df_used_for_fit(res, original_df):
             return original_df
 
 
+def _prediction_expression(res, yname: str) -> str:
+    """
+    Build a JMP-style 'Prediction Expression'.
+    Works for both formula OLS (Intercept) and matrix OLS (const).
+    Keeps factor/dummy terms as they appear in params.
+    """
+    params = res.params
+
+    # Intercept may be called 'Intercept' (formula) or 'const' (matrix fit)
+    intercept = None
+    for k in ("Intercept", "const"):
+        if k in params.index:
+            intercept = float(params[k])
+            break
+    if intercept is None:
+        intercept = 0.0
+
+    def _pretty(term: str) -> str:
+        # Unquote Q("Lot Size") -> Lot Size; turn ":" into " * " for interactions
+        if term.startswith('Q("') and term.endswith('")'):
+            term = term[3:-2]
+        term = term.replace(":", " * ")
+        return term
+
+    parts = [f"{yname}_hat = ({intercept:.6g})"]
+    for name, coef in params.items():
+        if name in ("Intercept", "const"):
+            continue
+        parts.append(f"+ ({float(coef):.6g})·{_pretty(str(name))}")
+    return " ".join(parts)
+
 def fit_model(df: pd.DataFrame, y: Union[str, List[str]], effects: List[str], *,
               personality: str = "standard_least_squares", degree: int = 1,
               cross: bool = False, add_poly: bool = False,
@@ -280,7 +311,8 @@ def fit_model(df: pd.DataFrame, y: Union[str, List[str]], effects: List[str], *,
                     "Lack Of Fit": (lof_tbl if lof_tbl is not None else {"note": note}),
                     "Max RSquare": (max_rsq if max_rsq is not None else np.nan),
                     "Parameter Estimates": _params_table(res),
-                    "Effect Tests": (eff_tests if eff_tests is not None else {"note": "Type III requires a formula fit; unavailable in matrix-fit fallback."})
+                    "Effect Tests": (eff_tests if eff_tests is not None else {"note": "Type III requires a formula fit; unavailable in matrix-fit fallback."}),
+                    "Prediction Expression": _prediction_expression(res, yi)
                 }
                 summaries[f"{yi}::jmp"] = jmp_block
             except Exception as _e:
@@ -320,7 +352,8 @@ def fit_model(df: pd.DataFrame, y: Union[str, List[str]], effects: List[str], *,
                     "Lack Of Fit": (lof_tbl if lof_tbl is not None else {"note": note}),
                     "Max RSquare": (max_rsq if max_rsq is not None else np.nan),
                     "Parameter Estimates": _params_table(res),
-                    "Effect Tests": (eff_tests if eff_tests is not None else {"note": "Effect tests unavailable."})
+                    "Effect Tests": (eff_tests if eff_tests is not None else {"note": "Effect tests unavailable."}),
+                    "Prediction Expression": _prediction_expression(res, yi)
                 }
             except Exception as _e:
                 summaries[f"{yi}::jmp"] = {"note": f"JMP-style tables unavailable: {_e}"}
