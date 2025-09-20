@@ -10,3 +10,5 @@ from .fitmodel import (
 )
 from .plots import jmp_fit_and_plots
 from .utils import display_dataframe_to_user
+from .jmp_faceted_scatter import plot_xy_by_group
+

@@ -12,7 +12,7 @@ import streamlit as st
 from jmpkit import (
     Dataset, load_any, add_channel_expr, add_channel_func,
     jmp_distribution_report, jmp_multivariate_panel_full,
-    fit_model, jmp_fit_and_plots,
+    fit_model, jmp_fit_and_plots, plot_xy_by_group
 )
 
 # ------------------ Small helpers for Streamlit ------------------
@@ -122,7 +122,7 @@ if "data" not in st.session_state:
 
 # ------------------ Main tabs ------------------
 
-tab_data, tab_dist, tab_multi, tab_fit = st.tabs(["Data", "Distribution", "Multivariate", "Fit Model"])
+tab_data, tab_dist, tab_multi, tab_fit, tab_plot_scatter = st.tabs(["Data", "Distribution", "Multivariate", "Fit Model", "Fit Y by X (faceted)"])
 
 # ---- Data tab ----
 with tab_data:
@@ -314,3 +314,30 @@ with tab_fit:
 
         except Exception as e:
             st.error(f"Fit failed: {e}")
+
+# ---- Plot Scatter tab ----
+with tab_plot_scatter:
+    st.subheader("Fit Y by X (faceted)")
+
+    cols_all = list(_df().columns)
+    x = st.selectbox("X (predictor)", options=cols_all, index=0 if cols_all else None)
+    y_opts = [c for c in cols_all if c != x]
+    y = st.selectbox("Y (response)", options=y_opts, index=0 if y_opts else None)
+
+    group = st.selectbox("Group (optional)", options=["(none)"] + cols_all, index=0)
+    grp = None if group == "(none)" else group
+
+    # Optional layout knobs (keep minimal; you can remove these lines if not needed)
+    ncols = st.slider("Facets per row", 1, 4, 3)
+    h = st.slider("Facet height (inches)", 3.0, 6.0, 4.0)
+    w = st.slider("Facet width (inches)", 3.0, 6.0, 4.0)
+
+    run_disabled = (x is None) or (y is None)
+    if st.button("Run XY Plot", disabled=run_disabled):
+        fig, _ = plot_xy_by_group(_df(), x=x, y=y, group=grp, ncols=ncols, height=h, width=w)
+
+        # If you already use _show_fig elsewhere:
+        # _show_fig(fig, width_px=width_px, dpi=dpi, caption=f"{y} vs {x} by {group if grp else 'All'}")
+
+        # Or simply:
+        st.pyplot(fig, use_container_width=True)
