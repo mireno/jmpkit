@@ -18,62 +18,85 @@ from jmpkit import (
     tag_fliers, get_fliers, set_flier_color, get_flier_color
 )
 
-# ------------------ Small helpers for Streamlit ------------------
+# =========================================================
+#            Performance helpers & cached funcs
+# =========================================================
 
-def _load_uploaded(file) -> Dataset:
-    """Load uploaded file (Excel/CSV/Parquet/Feather/JSON/PKL) into Dataset."""
-    name = file.name.lower()
-    if name.endswith((".xlsx", ".xls")):
-        df = pd.read_excel(file, sheet_name=0, header=0)
-    elif name.endswith((".csv", ".tsv", ".txt")):
-        df = pd.read_csv(file, sep=None, engine="python", header=0)
-    elif name.endswith(".parquet"):
-        df = pd.read_parquet(file)
-    elif name.endswith(".feather"):
-        df = pd.read_feather(file)
-    elif name.endswith(".json"):
-        try:
-            df = pd.read_json(file, orient="records")
-        except ValueError:
-            file.seek(0)
-            df = pd.read_json(file, orient="table")
-    elif name.endswith(".pkl"):
-        df = pd.read_pickle(file)
-    else:
-        st.error(f"Unsupported file type: {name}")
-        st.stop()
-    return Dataset(df.convert_dtypes(), source=name)
+def _ensure_state():
+    """Initialize frequently used session_state entries."""
+    ss = st.session_state
+    ss.setdefault("exports", {})
+    ss.setdefault("dataset_info", "")
+    ss.setdefault("data_version", 0)  # bump whenever data frame changes
+    ss.setdefault("last_dist", {})
+    ss.setdefault("tag_ui", {})
+
+def _bump_data_version(n: int = 1):
+    st.session_state["data_version"] = int(st.session_state.get("data_version", 0)) + int(n)
+
+@st.cache_data(show_spinner=False)
+def cached_summary(df_signature: Tuple[int, int, Tuple[str, ...], Tuple[str, ...]]) -> pd.DataFrame:
+    """Cache the dataset summary. Signature should change when df changes."""
+    # The actual DataFrame is read from session_state at call-time.
+    return st.session_state["data"].summary()
+
+@st.cache_data(show_spinner=False)
+def to_csv_bytes(df_signature: Tuple[int, int, Tuple[str, ...]]) -> bytes:
+    df = st.session_state["data"].df
+    return df.to_csv(index=False).encode("utf-8")
+
+@st.cache_data(show_spinner=False)
+def to_xlsx_bytes(df_signature: Tuple[int, int, Tuple[str, ...]]) -> bytes:
+    df = st.session_state["data"].df
+    bio = io.BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="data")
+    bio.seek(0)
+    return bio.read()
+
+@st.cache_data(show_spinner=False)
+def fig_to_png_bytes_cached(fig_id: str, dpi: int, version: int) -> bytes:
+    """Cache fig->PNG bytes for export/render; fig is addressed indirectly by an id pattern.
+    We generate bytes on demand when called, but Streamlit caches by (fig_id, dpi, version).
+    The caller must pass the actual figure to _fig_to_png_bytes (uncached) when showing inline."""
+    # This function is kept to allow future refactors to a fig registry if needed.
+    # For now, it simply exists to keep a stable cache key space.
+    return b""  # Not used directly; kept as placeholder for API stability
 
 def _df() -> pd.DataFrame:
     return st.session_state["data"].df
 
-def _download_link(df: pd.DataFrame, *, to: str = "xlsx"):
-    if to == "xlsx":
-        bio = io.BytesIO()
-        with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="data")
-        bio.seek(0)
-        st.download_button(
-            "Download Excel (.xlsx)", data=bio, file_name="dataset.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    else:
-        csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button("Download CSV", data=csv, file_name="dataset.csv", mime="text/csv")
+def _df_signature() -> Tuple[int, int, Tuple[str, ...]]:
+    df = _df()
+    return (len(df), df.shape[1], tuple(df.columns))
+
+def _df_signature_with_dtypes() -> Tuple[int, int, Tuple[str, ...], Tuple[str, ...]]:
+    df = _df()
+    return (len(df), df.shape[1], tuple(df.columns), tuple(map(str, df.dtypes)))
 
 def _safe_num_cols(df: pd.DataFrame) -> List[str]:
     return list(df.select_dtypes(include=[np.number]).columns)
 
 def _show_fig(fig, *, width_px: int, dpi: int, caption: str | None = None):
+    """Render a Matplotlib figure to the page (no caching needed here)."""
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
     buf.seek(0)
     st.image(buf, caption=caption, width=width_px)
     buf.close()
 
-# ------------------ Word export helpers ------------------
+def _fig_to_png_bytes(fig, *, dpi: int = 150) -> bytes:
+    """Bytes for export; wrapped so we can place a cache in front if needed."""
+    bio = io.BytesIO()
+    fig.savefig(bio, format="png", dpi=dpi, bbox_inches="tight")
+    bio.seek(0)
+    return bio.read()
+
+# =========================================================
+#                     Word export helpers
+# =========================================================
+
 def _need_docx() -> Tuple[bool, Any]:
-    """Try to import python-docx; return (ok, module_or_error)."""
     try:
         import docx
         from docx.shared import Inches, Pt, Cm
@@ -85,14 +108,7 @@ def _need_docx() -> Tuple[bool, Any]:
     except Exception as e:
         return False, e
 
-def _fig_to_png_bytes(fig, *, dpi: int = 150) -> bytes:
-    bio = io.BytesIO()
-    fig.savefig(bio, format="png", dpi=dpi, bbox_inches="tight")
-    bio.seek(0)
-    return bio.read()
-
 def _init_doc(title: str, dataset_info: str | None, mod) -> Any:
-    """Create a nicely formatted docx with styles and a cover page."""
     docx, Inches, Pt, Cm, WD_ALIGN_PARAGRAPH, WD_ORIENT, qn, OxmlElement = mod
     doc = docx.Document()
 
@@ -143,13 +159,9 @@ def _add_caption(doc, text: str, mod):
     r.font.size = Pt(10)
 
 def _add_section_heading(doc, text: str, level: int = 1):
-    # level: 1..4
-    level = max(1, min(level, 4))
-    doc.add_heading(text, level=level)
+    doc.add_heading(text, level=max(1, min(level, 4)))
 
 def _repeat_header(table):
-    """Ensure the first row repeats as header on page breaks."""
-    # python-docx doesn't expose this directly; toggle via XML
     tbl = table._element
     props = tbl.tblPr or tbl.get_or_add_tblPr()
     band = props.xpath("./w:tblHeader")
@@ -161,7 +173,6 @@ def _repeat_header(table):
         props.append(hdr)
 
 def _add_df_to_docx_table(document, df: pd.DataFrame, title: str | None = None, *, style_name: str = "Light Grid Accent 1", max_rows: int = 1000):
-    """Pretty table with header style and repeating header row."""
     if title:
         _add_section_heading(document, title, level=3)
 
@@ -176,21 +187,18 @@ def _add_df_to_docx_table(document, df: pd.DataFrame, title: str | None = None, 
         show_df = show_df.iloc[:max_rows].copy()
         truncated = True
 
-    # Convert non-string to string to avoid None issues
     show_df = show_df.applymap(lambda v: "" if pd.isna(v) else str(v))
 
     table = document.add_table(rows=1, cols=len(show_df.columns))
     try:
         table.style = style_name
     except Exception:
-        pass  # style might not exist in some Word templates
+        pass
 
-    # Header
     hdr_cells = table.rows[0].cells
     for j, col in enumerate(show_df.columns):
         hdr_cells[j].text = str(col)
 
-    # Data rows
     for _, row in show_df.iterrows():
         cells = table.add_row().cells
         for j, col in enumerate(show_df.columns):
@@ -210,7 +218,6 @@ def _add_image(document, img_bytes: bytes, caption: str | None, mod, width_inche
         _add_caption(document, caption, mod)
 
 def _export_payload_to_docx(payload: Dict[str, Any], title: str) -> io.BytesIO:
-    """Build a well-formatted .docx from the captured export payload."""
     ok, mod = _need_docx()
     if not ok:
         st.error("Missing dependency `python-docx`. Install with: `pip install python-docx`")
@@ -232,7 +239,6 @@ def _export_payload_to_docx(payload: Dict[str, Any], title: str) -> io.BytesIO:
         _add_section_heading(doc, "Distribution", level=2)
         for item in payload["dist_tab"]:
             _add_section_heading(doc, str(item.get("column", "Column")), level=3)
-            # figures then tables
             for cap, fig_bytes in item.get("figs", []):
                 _add_image(doc, fig_bytes, cap, mod)
             for cap, df in item.get("tables", []):
@@ -280,57 +286,106 @@ def _export_payload_to_docx(payload: Dict[str, Any], title: str) -> io.BytesIO:
     bio.seek(0)
     return bio
 
+@st.cache_data(show_spinner=False)
+def export_payload_to_docx_cached(payload: Dict[str, Any], title: str, version: int) -> bytes:
+    """Cache the final .docx bytes by payload 'shape' (we rely on caller to pass stable payload)."""
+    bio = _export_payload_to_docx(payload, title)
+    return bio.read()
+
 def _export_button_for_tab(tab_key: str, file_label: str = "Export this tab to Word"):
-    """Build a docx from current exports[tab_key] and show a download button (if there is content)."""
     exports = st.session_state.setdefault("exports", {})
     tab_payload = exports.get(tab_key)
     if not tab_payload:
         st.caption("Nothing to export yet on this tab.")
         return
     title = f"JMP-like Analysis — {tab_key.replace('_',' ').title()}"
-    bio = _export_payload_to_docx({"dataset_info": st.session_state.get("dataset_info", ""), **{tab_key: tab_payload}}, title)
-    if bio.getbuffer().nbytes == 0:
+    payload = {"dataset_info": st.session_state.get("dataset_info", ""), **{tab_key: tab_payload}}
+    # Cache by a cheap signature: tab_key + data_version + simple sizes
+    version = st.session_state["data_version"]
+    try:
+        docx_bytes = export_payload_to_docx_cached(payload, title, version)
+    except Exception:
+        # Fallback uncached if something went wrong with hashing inside cache
+        docx_bytes = _export_payload_to_docx(payload, title).read()
+
+    if not docx_bytes:
         return
     st.download_button(
         file_label,
-        data=bio,
+        data=docx_bytes,
         file_name=f"{tab_key}.docx",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         key=f"dl_{tab_key}"
     )
 
-# ------------------ App layout ------------------
+# =========================================================
+#                       Data loading
+# =========================================================
+
+def _load_uploaded(file) -> Dataset:
+    """Load uploaded file (Excel/CSV/Parquet/Feather/JSON/PKL) into Dataset."""
+    name = file.name.lower()
+    if name.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(file, sheet_name=0, header=0)
+    elif name.endswith((".csv", ".tsv", ".txt")):
+        df = pd.read_csv(file, sep=None, engine="python", header=0)
+    elif name.endswith(".parquet"):
+        df = pd.read_parquet(file)
+    elif name.endswith(".feather"):
+        df = pd.read_feather(file)
+    elif name.endswith(".json"):
+        try:
+            df = pd.read_json(file, orient="records")
+        except ValueError:
+            file.seek(0)
+            df = pd.read_json(file, orient="table")
+    elif name.endswith(".pkl"):
+        df = pd.read_pickle(file)
+    else:
+        st.error(f"Unsupported file type: {name}")
+        st.stop()
+    return Dataset(df.convert_dtypes(), source=name)
+
+# =========================================================
+#                       App Layout
+# =========================================================
 
 st.set_page_config(page_title="JMP-like Analysis — Web UI", layout="wide")
-st.title("JMP-like Analysis — Web Interface")
+_ensure_state()
 
-# initialize export containers
-st.session_state.setdefault("exports", {})
-st.session_state.setdefault("dataset_info", "")
+st.title("JMP-like Analysis — Web Interface")
 
 with st.sidebar:
     st.header("1) Upload Data")
     up = st.file_uploader(
         "Excel/CSV/Parquet/Feather/JSON/PKL",
-        type=["xlsx","xls","csv","tsv","txt","parquet","feather","json","pkl"]
+        type=["xlsx","xls","csv","tsv","txt","parquet","feather","json","pkl"],
+        key="uploader_main"
     )
     if up is not None:
         st.session_state["data"] = _load_uploaded(up)
         st.session_state["dataset_info"] = f"Source: {up.name} — {len(_df()):,} rows × {_df().shape[1]} cols"
+        _bump_data_version()
         st.success(f"Loaded: {up.name}  →  {len(_df()):,} rows × {_df().shape[1]} cols")
 
     if "data" in st.session_state:
         st.divider()
         st.header("2) Channels")
         st.caption("Add derived columns using expressions. Use backticks for names with spaces: `temp(f)`")
-        col1, col2 = st.columns([1,2])
-        with col1:
-            new_name = st.text_input("New column name", key="channel_name")
-        with col2:
-            expr = st.text_input("Expression (pandas.eval)", placeholder="e.g., log(`credit_score` + 1)", key="channel_expr")
-        if st.button("Add Channel", type="primary", disabled=not new_name or not expr, key="btn_add_channel"):
+
+        # ---- FORM to stop per-keystroke reruns ----
+        with st.form("channels_form"):
+            col1, col2 = st.columns([1,2])
+            with col1:
+                new_name = st.text_input("New column name", key="channel_name")
+            with col2:
+                expr = st.text_input("Expression (pandas.eval)", placeholder="e.g., log(`credit_score` + 1)", key="channel_expr")
+            submitted_add = st.form_submit_button("Add Channel", disabled=not new_name or not expr)
+
+        if submitted_add:
             try:
                 add_channel_expr(st.session_state["data"], new_name, expr, overwrite=True)
+                _bump_data_version()
                 st.success(f"Added/updated channel: {new_name}")
             except Exception as e:
                 st.error(f"Failed to add channel: {e}")
@@ -342,27 +397,46 @@ with st.sidebar:
         st.caption("These only affect how figures are rendered here; the underlying figure objects are unchanged.")
 
         st.divider()
-        st.header("4) Download")
-        _download_link(_df(), to="xlsx")
-        _download_link(_df(), to="csv")
+        st.header("4) Download (cached)")
+        if "data" in st.session_state:
+            sig = _df_signature()
+            st.download_button(
+                "Download Excel (.xlsx)",
+                data=to_xlsx_bytes(sig),
+                file_name="dataset.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_xlsx_main"
+            )
+            st.download_button(
+                "Download CSV",
+                data=to_csv_bytes(sig),
+                file_name="dataset.csv",
+                mime="text/csv",
+                key="dl_csv_main"
+            )
 
 # Halt early if no data
 if "data" not in st.session_state:
     st.info("Upload a file to get started. Once loaded, you can add channels and run analyses.")
     st.stop()
 
-# ------------------ Main tabs ------------------
+# =========================================================
+#                         Tabs
+# =========================================================
 
-tab_data, tab_dist, tab_multi, tab_fit, tab_plot_scatter = st.tabs(["Data", "Distribution", "Multivariate", "Fit Model", "Fit Y by X (faceted)"])
+tab_data, tab_dist, tab_multi, tab_fit, tab_plot_scatter = st.tabs(
+    ["Data", "Distribution", "Multivariate", "Fit Model", "Fit Y by X (faceted)"]
+)
 
-# ---- Data tab ----
+# ------------------ Data tab ------------------
 with tab_data:
     st.subheader("Preview")
     prev_df = _df().head(100)
     st.dataframe(prev_df, use_container_width=True)
 
     st.subheader("Summary")
-    summary_df = st.session_state["data"].summary()
+    sig_full = _df_signature_with_dtypes()
+    summary_df = cached_summary(sig_full)
     st.dataframe(summary_df, use_container_width=True)
 
     # Capture for export
@@ -374,7 +448,7 @@ with tab_data:
     st.markdown("---")
     _export_button_for_tab("data_tab", "Export this tab to Word")
 
-# ---- Distribution tab ----
+# ------------------ Distribution tab ------------------
 with tab_dist:
     st.subheader("Distribution Report")
     cols_sel = st.multiselect(
@@ -383,11 +457,6 @@ with tab_dist:
         default=_safe_num_cols(_df())[:1],
         key="dist_cols_sel"
     )
-
-    if "last_dist" not in st.session_state:
-        st.session_state["last_dist"] = {}
-    if "tag_ui" not in st.session_state:
-        st.session_state["tag_ui"] = {}
 
     # container to accumulate export items for this run
     dist_items_for_export: List[Dict[str, Any]] = []
@@ -434,7 +503,7 @@ with tab_dist:
         # store export payload for this tab
         st.session_state["exports"]["dist_tab"] = dist_items_for_export
 
-    # ---- Tagging controls (always after results) ----
+    # ---- Tagging controls (after results) ----
     if st.session_state["last_dist"]:
         st.markdown("---")
         st.markdown("### Tagging Options for Selected Channels")
@@ -477,7 +546,7 @@ with tab_dist:
     st.markdown("---")
     _export_button_for_tab("dist_tab", "Export this tab to Word")
 
-# ---- Multivariate tab ----
+# ------------------ Multivariate tab ------------------
 with tab_multi:
     st.subheader("Multivariate Panel")
     mcols = st.multiselect("Columns (≥2)", options=list(_df().columns), default=_safe_num_cols(_df())[:3], key="multi_cols_sel")
@@ -509,7 +578,7 @@ with tab_multi:
     st.markdown("---")
     _export_button_for_tab("multi_tab", "Export this tab to Word")
 
-# ---- Fit Model tab ----
+# ------------------ Fit Model tab ------------------
 with tab_fit:
     st.subheader("Fit Model")
     persona = st.selectbox(
@@ -645,7 +714,7 @@ with tab_fit:
     st.markdown("---")
     _export_button_for_tab("fit_tab", "Export this tab to Word")
 
-# ---- Plot Scatter tab ----
+# ------------------ Plot Scatter tab ------------------
 with tab_plot_scatter:
     st.subheader("Fit Y by X (faceted)")
     cols_all = list(_df().columns)
