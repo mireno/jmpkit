@@ -162,12 +162,18 @@ def _add_section_heading(doc, text: str, level: int = 1):
     doc.add_heading(text, level=max(1, min(level, 4)))
 
 def _repeat_header(table):
+    """Ensure the first row repeats as header on page breaks."""
     tbl = table._element
-    props = tbl.tblPr or tbl.get_or_add_tblPr()
-    band = props.xpath("./w:tblHeader")
-    if not band:
-        from docx.oxml import OxmlElement
-        from docx.oxml.ns import qn
+    props = getattr(tbl, "tblPr", None)
+    if props is None:
+        props = tbl.get_or_add_tblPr()
+
+    # Add <w:tblHeader w:val="true"/> if missing
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    has_tbl_header = props.xpath("./w:tblHeader")
+    if not has_tbl_header:
         hdr = OxmlElement("w:tblHeader")
         hdr.set(qn("w:val"), "true")
         props.append(hdr)
@@ -187,7 +193,7 @@ def _add_df_to_docx_table(document, df: pd.DataFrame, title: str | None = None, 
         show_df = show_df.iloc[:max_rows].copy()
         truncated = True
 
-    show_df = show_df.applymap(lambda v: "" if pd.isna(v) else str(v))
+    show_df = show_df.map(lambda v: "" if pd.isna(v) else str(v))
 
     table = document.add_table(rows=1, cols=len(show_df.columns))
     try:
@@ -432,12 +438,12 @@ tab_data, tab_dist, tab_multi, tab_fit, tab_plot_scatter = st.tabs(
 with tab_data:
     st.subheader("Preview")
     prev_df = _df().head(100)
-    st.dataframe(prev_df, use_container_width=True)
+    st.dataframe(prev_df, width='stretch')
 
     st.subheader("Summary")
     sig_full = _df_signature_with_dtypes()
     summary_df = cached_summary(sig_full)
-    st.dataframe(summary_df, use_container_width=True)
+    st.dataframe(summary_df, width='stretch')
 
     # Capture for export
     st.session_state["exports"]["data_tab"] = {
@@ -469,12 +475,12 @@ with tab_dist:
                 res = jmp_distribution_report(_df(), c)
                 _show_fig(res["fig_hist"], width_px=st.session_state.get("plot_width", 900), dpi=st.session_state.get("plot_dpi", 120), caption="Histogram + Fitted Normal")
                 _show_fig(res["fig_box"],  width_px=st.session_state.get("plot_width", 900), dpi=st.session_state.get("plot_dpi", 120), caption="Box Plot")
-                st.dataframe(res["quantiles_df"], use_container_width=True)
-                st.dataframe(res["summary_df"], use_container_width=True)
-                st.dataframe(res["fit_params_df"], use_container_width=True)
-                st.dataframe(res["fit_stats_df"], use_container_width=True)
-                st.dataframe(res["gof_summary_df"], use_container_width=True)
-                st.dataframe(res["ad_details_df"], use_container_width=True)
+                st.dataframe(res["quantiles_df"], width='stretch')
+                st.dataframe(res["summary_df"], width='stretch')
+                st.dataframe(res["fit_params_df"], width='stretch')
+                st.dataframe(res["fit_stats_df"], width='stretch')
+                st.dataframe(res["gof_summary_df"], width='stretch')
+                st.dataframe(res["ad_details_df"], width='stretch')
 
                 # remember for tagging
                 st.session_state["last_dist"][c] = {
@@ -558,8 +564,8 @@ with tab_multi:
         try:
             out = jmp_multivariate_panel_full(_df(), columns=mcols, alpha=alpha, upper=upper, diag=diag)
             _show_fig(out["fig_matrix"], width_px=st.session_state.get("plot_width", 900), dpi=st.session_state.get("plot_dpi", 120), caption="Scatterplot Matrix")
-            st.dataframe(out["corr_df"], use_container_width=True)
-            st.dataframe(out["n_pairs_df"], use_container_width=True)
+            st.dataframe(out["corr_df"], width='stretch')
+            st.dataframe(out["n_pairs_df"], width='stretch')
             _show_fig(out["md_fig"], width_px=st.session_state.get("plot_width", 900), dpi=st.session_state.get("plot_dpi", 120), caption="Mahalanobis Distances")
 
             # capture for export
@@ -655,7 +661,7 @@ with tab_fit:
                         if isinstance(content, list) and content and isinstance(content[0], dict):
                             df = pd.DataFrame(content)
                             if "Term" in df.columns: df = df.set_index("Term")
-                            st.dataframe(df, use_container_width=True)
+                            st.dataframe(df, width='stretch')
                             summary_tables.append((f"{k} — {section}", df))
                         elif isinstance(content, dict):
                             first_val = next(iter(content.values()), {})
@@ -663,7 +669,7 @@ with tab_fit:
                                 df = pd.DataFrame(content).T
                             else:
                                 df = pd.DataFrame([content])
-                            st.dataframe(df, use_container_width=True)
+                            st.dataframe(df, width='stretch')
                             summary_tables.append((f"{k} — {section}", df))
                         else:
                             st.code(str(content), language="text")
@@ -732,7 +738,7 @@ with tab_plot_scatter:
     run_disabled = (x is None) or (y is None)
     if st.button("Run XY Plot", disabled=run_disabled, key="btn_run_xy"):
         fig, _ = plot_xy_by_group(_df(), x=x, y=y, group=grp, ncols=ncols, height=h, width=w)
-        st.pyplot(fig, use_container_width=True)
+        st.pyplot(fig, width='stretch')
         st.session_state["exports"]["xy_tab"] = {
             "desc": f"Y: {y} by X: {x}" + ("" if grp is None else f" — grouped by {grp}"),
             "figs": [("Faceted Scatter", _fig_to_png_bytes(fig, dpi=st.session_state.get("plot_dpi", 120)))],

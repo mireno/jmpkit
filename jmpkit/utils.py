@@ -3,6 +3,7 @@ from typing import List, Iterable, Tuple
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import sys
 
 def q(name: str) -> str:
     return f'Q("{name}")'
@@ -69,18 +70,19 @@ def display_dataframe_to_user(name: str, dataframe: pd.DataFrame,
     else:
         df_to_show = df
     try:
-        from IPython.display import display, HTML
-        if precision is not None:
-            old = pd.get_option("display.precision"); pd.set_option("display.precision", precision)
-        try:
-            caption = f"{name} — {len(df):,} rows × {df.shape[1]}"
-            styler = df_to_show.style.set_caption(caption)
-            if not show_index: styler = styler.hide(axis="index")
-            display(styler)
-            if truncated:
-                display(HTML(f"<em>Showing first {max_rows} rows of {len(df):,}.</em>"))
-        finally:
-            if precision is not None: pd.set_option("display.precision", old)
+        if "ipykernel" in sys.modules or "IPython" in sys.modules:
+            from IPython.display import display, HTML
+            if precision is not None:
+                old = pd.get_option("display.precision"); pd.set_option("display.precision", precision)
+            try:
+                caption = f"{name} — {len(df):,} rows × {df.shape[1]}"
+                styler = df_to_show.style.set_caption(caption)
+                if not show_index: styler = styler.hide(axis="index")
+                display(styler)
+                if truncated:
+                    display(HTML(f"<em>Showing first {max_rows} rows of {len(df):,}.</em>"))
+            finally:
+                if precision is not None: pd.set_option("display.precision", old)
     except Exception:
         print(f"\n{name} — {len(df)} rows × {df.shape[1]}")
         print(df_to_show.to_string(index=show_index))

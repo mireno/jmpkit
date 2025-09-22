@@ -72,16 +72,32 @@ def jmp_distribution_report(df: pd.DataFrame, column: str, *, tag_fliers: bool =
     f_indices = list(s.index[f_mask.fillna(False)])
 
     # --- plots ---
-    fig_hist = plt.figure()
-    plt.hist(x, bins="auto", density=True)
-    grid = np.linspace(x.min(), x.max(), 200)
-    plt.plot(grid, _normal_pdf(grid, mu_hat, sigma_mle))
-    plt.axvline(float(np.median(x)), linewidth=1)
-    plt.title(f"Distribution — {column}"); plt.xlabel(column); plt.ylabel("Density"); plt.show()
+    # BEFORE (warns in non-interactive backends)
+    # fig_hist = plt.figure()
+    # plt.hist(x, bins="auto", density=True)
+    # grid = np.linspace(x.min(), x.max(), 200)
+    # plt.plot(grid, _normal_pdf(grid, mu_hat, sigma_mle))
+    # plt.axvline(float(np.median(x)), linewidth=1)
+    # plt.title(f"Distribution — {column}"); plt.xlabel(column); plt.ylabel("Density"); plt.show()
 
-    fig_box = plt.figure()
-    plt.boxplot(x, vert=True, whis=1.5, showfliers=True)
-    plt.title(f"Box Plot — {column}"); plt.ylabel(column); plt.show()
+    # fig_box = plt.figure()
+    # plt.boxplot(x, vert=True, whis=1.5, showfliers=True)
+    # plt.title(f"Box Plot — {column}"); plt.ylabel(column); plt.show()
+
+    # AFTER (backend-safe, no plt.show)
+    fig_hist, axh = plt.subplots()
+    axh.hist(x, bins="auto", density=True)
+    grid = np.linspace(x.min(), x.max(), 200)
+    axh.plot(grid, _normal_pdf(grid, mu_hat, sigma_mle))
+    axh.axvline(float(np.median(x)), linewidth=1)
+    axh.set_title(f"Distribution — {column}")
+    axh.set_xlabel(column)
+    axh.set_ylabel("Density")
+
+    fig_box, axb = plt.subplots()
+    axb.boxplot(x, vert=True, whis=1.5, showfliers=True)
+    axb.set_title(f"Box Plot — {column}")
+    axb.set_ylabel(column)
 
     # --- Normality goodness-of-fit: Shapiro–Wilk & Anderson–Darling ---
     have_scipy = True

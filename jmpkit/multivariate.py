@@ -87,7 +87,7 @@ def jmp_multivariate_panel_full(df: pd.DataFrame,
         if p < 2: msg.append("Mahalanobis requires ≥2 usable numeric columns after cleaning.")
         if n < 2: msg.append("Not enough complete rows (need ≥2).")
         ax.text(0.5, 0.5, "\n".join(msg), ha="center", va="center")
-        plt.show()
+
         display_dataframe_to_user("Mahalanobis Distances — Table", md_table)
         return {
             "fig_matrix": fig_matrix, "corr_df": corr_df, "n_pairs_df": n_pairs_df,
@@ -129,7 +129,7 @@ def jmp_multivariate_panel_full(df: pd.DataFrame,
     ax.set_title("Mahalanobis Distances")
     ax.set_xlabel("Row Number")
     ax.set_ylabel("Distance")
-    plt.tight_layout(); plt.show()
+    plt.tight_layout()
 
     display_dataframe_to_user("Mahalanobis Distances — Table", md_table)
 
