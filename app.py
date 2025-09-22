@@ -4,6 +4,7 @@ import io
 import json
 from typing import List, Tuple, Dict, Any
 from datetime import datetime
+from embedded_house_prices_data import EMBEDDED_SAMPLE_CSV, build_dataset_from_embedded_csv
 
 import numpy as np
 import pandas as pd
@@ -373,6 +374,22 @@ with st.sidebar:
         st.session_state["dataset_info"] = f"Source: {up.name} — {len(_df()):,} rows × {_df().shape[1]} cols"
         _bump_data_version()
         st.success(f"Loaded: {up.name}  →  {len(_df()):,} rows × {_df().shape[1]} cols")
+
+    if st.button("Load sample data (embedded CSV)", key="btn_load_sample_embedded_csv"):
+        try:
+            ds = build_dataset_from_embedded_csv(Dataset)
+            st.session_state["data"] = ds
+            st.session_state["dataset_info"] = (
+                f"Source: house_prices_US.csv (embedded) — "
+                f"{len(_df()):,} rows × {_df().shape[1]} cols"
+            )
+            _bump_data_version()
+            st.success(
+                f"Loaded sample (embedded CSV): house_prices_US  →  "
+                f"{len(_df()):,} rows × {_df().shape[1]} cols"
+            )
+        except Exception as e:
+            st.error(f"Failed to load embedded CSV sample: {e}")
 
     if "data" in st.session_state:
         st.divider()
