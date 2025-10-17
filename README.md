@@ -1,8 +1,8 @@
 # jmpkit
 Implementing JMP-style statistical analysis in Python
 
-1. Start a new venv
-    python -m venv .venv
+1. Start a new venv (make sure to use python 3.12)
+    python3.12 -m venv .venv
     . .venv/bin/activate
 
 2. Install pip requirements
