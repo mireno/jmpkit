@@ -635,12 +635,92 @@ with tab_fit:
         add_poly = st.checkbox("Add polynomial terms", value=False, key="fit_add_poly")
 
     extra_kwargs = {}
+    
     if persona == "stepwise":
-        col1, col2 = st.columns(2)
+        # --- JMP-like Stepwise Regression Control ---
+        st.markdown("### Stepwise Regression Control")
+
+        # Stopping rule (Criterion) and probabilities
+        col0, col1, col2, col3 = st.columns([1,1,1,1])
+        with col0:
+            stopping_rule = st.selectbox("Stopping Rule", ["P-value Threshold","AIC"], index=0, key="sw_rule")
+            extra_kwargs["selection_criterion"] = "pvalue" if stopping_rule == "P-value Threshold" else "aic"
         with col1:
-            extra_kwargs["stepwise_direction"] = st.selectbox("Direction", ["forward","backward","both"], index=2, key="fit_step_dir")
+            extra_kwargs["entry_p"] = st.number_input("Prob to Enter", min_value=0.0001, max_value=0.9999, value=float(st.session_state.get("fit_step_entryp_val", 0.05)), step=0.005, format="%.4f", key="sw_entry")
         with col2:
-            extra_kwargs["max_steps"] = st.number_input("Max steps", 1, 200, 50, 1, key="fit_step_max")
+            extra_kwargs["exit_p"]  = st.number_input("Prob to Leave",  min_value=0.0001, max_value=0.9999, value=float(st.session_state.get("fit_step_exitp_val", 0.10)), step=0.005, format="%.4f", key="sw_exit")
+        with col3:
+            extra_kwargs["stepwise_direction"] = st.selectbox("Direction", ["Forward","Backward","Mixed","Both"], index=2, key="sw_dir").lower()
+
+        extra_kwargs["max_steps"] = st.number_input("Max steps", 1, 500, 50, 1, key="sw_max_steps")
+
+        # Maintain stepwise session state (current selected terms)
+        ss = st.session_state
+        if "sw_selected" not in ss:
+            ss["sw_selected"] = []
+        if "sw_running" not in ss:
+            ss["sw_running"] = False
+
+        # The available effects are the 'effects' list chosen above
+        # Buttons row: Enter All, Remove All, Make Model, Run Model
+        cA, cB, cC, cD = st.columns(4)
+        with cA:
+            if st.button("Enter All", key="sw_enter_all"):
+                ss["sw_selected"] = list(effects)
+        with cB:
+            if st.button("Remove All", key="sw_remove_all"):
+                ss["sw_selected"] = []
+        with cC:
+            make_model = st.button("Make Model", key="sw_make_model")
+        with cD:
+            run_model = st.button("Run Model", key="sw_run_model")
+
+        # Row: Go, Stop, Step
+        cE, cF, cG = st.columns(3)
+        with cE:
+            go = st.button("Go", key="sw_go")
+        with cF:
+            stop = st.button("Stop", key="sw_stop")
+        with cG:
+            step_once = st.button("Step", key="sw_step")
+
+        # Compute actions
+        def _fit_stepwise(initial_selected, max_steps):
+            return fit_model(_df(), y=y_sel, effects=effects, personality="stepwise",
+                             initial_selected=initial_selected,
+                             degree=degree, cross=cross, add_poly=add_poly, **extra_kwargs, max_steps=max_steps)
+
+        sw_path = []
+        sw_selected = list(ss["sw_selected"])
+        if make_model:
+            # Fit OLS using the currently selected set
+            if len(sw_selected) == 0:
+                st.warning("No terms selected. Add terms with Enter All or Stepwise selection.")
+            else:
+                rhs = " + ".join(sw_selected)
+                res = fit_model(_df(), y=y_sel, effects=sw_selected, personality="standard_least_squares",
+                                degree=1, cross=False, add_poly=False)
+                st.success(f"Made model: {y_sel} ~ {rhs}")
+                st.code(res.formula or f"{y_sel} ~ {rhs}", language="text")
+        if run_model or go:
+            # Full run to stopping rule
+            res = _fit_stepwise(sw_selected, max_steps=int(extra_kwargs["max_steps"]))
+            m = res.metrics.get(y_sel, {})
+            ss["sw_selected"] = list(m.get("selected_terms", sw_selected))
+            sw_path = m.get("path", [])
+        if step_once:
+            # Run exactly one step from current state
+            res = _fit_stepwise(sw_selected, max_steps=1)
+            m = res.metrics.get(y_sel, {})
+            ss["sw_selected"] = list(m.get("selected_terms", sw_selected))
+            sw_path = m.get("path", [])
+
+        # Display current selection and (latest) path increment
+        st.markdown("**Current Selected Terms:** " + (", ".join(ss["sw_selected"]) if ss["sw_selected"] else "(none)"))
+        if sw_path:
+            st.markdown("**Last Step(s):**")
+            st.dataframe(pd.DataFrame(sw_path), use_container_width=True)
+        st.caption("Use Step to iterate one action at a time, or Go/Run Model to complete the procedure.")
     if persona == "glm":
         col1, col2 = st.columns(2)
         with col1:

@@ -246,7 +246,11 @@ def fit_model(df: pd.DataFrame, y: Union[str, List[str]], effects: List[str], *,
               l1_ratio: Optional[float] = None,
               duration_col: Optional[str] = None, event_col: Optional[str] = None,
               aft_distribution: str = "weibull",
-              n_components: Optional[int] = None) -> FitResult:
+              n_components: Optional[int] = None,
+              entry_p: float = 0.05,
+              exit_p: float = 0.10,
+              selection_criterion: str = 'pvalue',
+              initial_selected: list[str] | None = None) -> FitResult:
 
     ys = as_list(y)
     rhs = _rhs_from_effects(effects, degree=degree, cross=cross, add_poly=add_poly)
@@ -321,26 +325,138 @@ def fit_model(df: pd.DataFrame, y: Union[str, List[str]], effects: List[str], *,
 
         return FitResult("OLS", f"{' + '.join(ys)} ~ {rhs}", models, summaries, metrics)
 
+    
     if personality == "stepwise":
         require(_HAVE_SM, "statsmodels is required for stepwise OLS.")
-        def aic_of(formula): return smf.ols(formula, data=df, weights=w).fit().aic
-        selected, candidates, best_aic, steps = [], effects.copy(), np.inf, 0
-        while steps < max_steps and candidates:
-            steps += 1; improved = False
-            fwd = sorted([(aic_of(f"{ys[0]} ~ " + ("+".join(selected + [c]) if selected else c)), c) for c in candidates])
-            if fwd and fwd[0][0] + 1e-9 < best_aic:
-                best_aic, c = fwd[0]; selected.append(c); candidates.remove(c); improved = True
-            if stepwise_direction in ("both","backward") and selected:
-                bwd = sorted([(aic_of(f"{ys[0]} ~ " + ("+".join([z for z in selected if z != c]) or "1")), c) for c in list(selected)])
-                if bwd and bwd[0][0] + 1e-9 < best_aic:
-                    best_aic, worst = bwd[0]; selected.remove(worst); improved = True
-            if not improved: break
-        final_rhs = "+".join(selected) or "1"
+        crit = (selection_criterion or "pvalue").lower()
+        require(crit in {"pvalue","aic"}, "selection_criterion must be 'pvalue' or 'aic'.")
+        direction = (stepwise_direction or "both").lower()
+
+        # Keep a log of actions for the UI
+        path = []   # list of dicts: {"step": k, "action": "enter"/"remove"/"stop", "term": term, "criterion": value}
+        selected = []                 # terms currently in the model
+        candidates = effects.copy()   # pool to consider
+        steps = 0
+
+        def fit_with_terms(yname, terms):
+            rhs_terms = " + ".join(terms) if terms else "1"
+            return smf.ols(f"{yname} ~ {rhs_terms}", data=df, weights=w).fit()
+
+        # Helper to compute selection score for adding/removing a single term
+        def best_forward_term(yname, current_terms, pool):
+            best_term, best_score = None, None
+            for t in pool:
+                terms = current_terms + [t]
+                res = fit_with_terms(yname, terms)
+                if crit == "aic":
+                    score = float(res.aic)
+                    # lower is better
+                    if (best_score is None) or (score < best_score - 1e-9):
+                        best_term, best_score = t, score
+                else:
+                    # p-value for the term just entered (Wald t-test on coefficient)
+                    # Note: for non-numeric/categorical, this treats the first parameter's p-value.
+                    pname = t if t in res.pvalues.index else f'Q("{t}")'
+                    pv = float(res.pvalues.get(pname, float("inf")))
+                    if (best_score is None) or (pv < best_score - 1e-12):
+                        best_term, best_score = t, pv
+            return best_term, best_score
+
+        def worst_backward_term(yname, current_terms):
+            worst_term, worst_score = None, None
+            if not current_terms:
+                return None, None
+            res = fit_with_terms(yname, current_terms)
+            for t in list(current_terms):
+                pname = t if t in res.pvalues.index else f'Q("{t}")'
+                pv = float(res.pvalues.get(pname, float("nan")))
+                if crit == "aic":
+                    # compute AIC if we remove this term
+                    terms_minus = [z for z in current_terms if z != t]
+                    res2 = fit_with_terms(yname, terms_minus)
+                    score = float(res2.aic)
+                    # lower is better; "worst" is the removal that most reduces AIC
+                    if (worst_score is None) or (score < worst_score - 1e-9):
+                        worst_term, worst_score = t, score
+                else:
+                    # larger p-value is worse
+                    if not np.isfinite(pv): 
+                        pv = 1.0
+                    if (worst_score is None) or (pv > worst_score + 1e-12):
+                        worst_term, worst_score = t, pv
+            return worst_term, worst_score
+
+        # We drive selection based only on the first Y for the path.
+        y0 = ys[0]
+
+        # Initialize based on direction, but honor 'initial_selected' if provided
+        if initial_selected is not None:
+            selected = [t for t in initial_selected if t in effects]
+            candidates = [t for t in effects if t not in selected]
+        elif direction == "backward":
+            selected = effects.copy()
+            candidates = []
+        else:
+            selected = []
+            candidates = effects.copy()
+
+        best_overall = None  # for AIC
+        if crit == "aic":
+            res0 = fit_with_terms(y0, selected)
+            best_overall = float(res0.aic)
+
+        while steps < max_steps:
+            steps += 1
+            changed = False
+
+            # FORWARD
+            if direction in {"forward","both","mixed"} and len(candidates) > 0:
+                t_add, score = best_forward_term(y0, selected, candidates)
+                if t_add is not None:
+                    if (crit == "aic" and score < (best_overall - 1e-9)) or \
+                       (crit == "pvalue" and score <= float(entry_p)):
+                        selected.append(t_add)
+                        candidates.remove(t_add)
+                        changed = True
+                        path.append({"step": steps, "action": "enter", "term": t_add, "criterion": float(score)})
+                        if crit == "aic":
+                            best_overall = float(score)
+
+            # BACKWARD
+            if direction in {"backward","both","mixed"} and len(selected) > 0:
+                t_drop, score = worst_backward_term(y0, selected)
+                if t_drop is not None:
+                    if (crit == "aic" and score < (best_overall - 1e-9)) or \
+                       (crit == "pvalue" and score >= float(exit_p)):
+                        # if AIC, score represents the AIC of the model *after* dropping
+                        selected.remove(t_drop)
+                        changed = True
+                        path.append({"step": steps, "action": "remove", "term": t_drop, "criterion": float(score)})
+                        if crit == "aic":
+                            best_overall = float(score)
+
+            if not changed:
+                path.append({"step": steps, "action": "stop", "term": None, "criterion": float(best_overall) if crit == "aic" else None})
+                break
+
+        final_rhs = " + ".join(selected) if selected else "1"
+
         for yi in ys:
             res = smf.ols(f"{yi} ~ {final_rhs}", data=df, weights=w).fit()
-            models[yi] = res; summaries[yi] = res.summary()
-            metrics[yi] = {"AIC": float(res.aic), "BIC": float(res.bic), "R2": float(res.rsquared)}
-            # NEW: attach JMP-like block to stepwise final model as well
+            models[yi] = res
+            # Attach a compact summary as text plus the path
+            summaries[yi] = res.summary()
+            metrics[yi] = {"AIC": float(getattr(res, "aic", np.nan)),
+                           "BIC": float(getattr(res, "bic", np.nan)),
+                           "R2":  float(getattr(res, "rsquared", np.nan)),
+                           "selected_terms": list(selected),
+                           "direction": direction,
+                           "criterion": crit,
+                           "entry_p": float(entry_p),
+                           "exit_p": float(exit_p),
+                           "path": path}
+
+            # JMP-like block for final model
             try:
                 df_used = _df_used_for_fit(res, df)
                 anova_tbl, core = _anova_tables_from_res(res)
@@ -353,10 +469,12 @@ def fit_model(df: pd.DataFrame, y: Union[str, List[str]], effects: List[str], *,
                     "Max RSquare": (max_rsq if max_rsq is not None else np.nan),
                     "Parameter Estimates": _params_table(res),
                     "Effect Tests": (eff_tests if eff_tests is not None else {"note": "Effect tests unavailable."}),
-                    "Prediction Expression": _prediction_expression(res, yi)
+                    "Prediction Expression": _prediction_expression(res, yi),
+                    "Stepwise Path": path,
                 }
             except Exception as _e:
-                summaries[f"{yi}::jmp"] = {"note": f"JMP-style tables unavailable: {_e}"}
+                summaries[f"{yi}::jmp"] = {"note": f"JMP-style tables unavailable: {_e}", "Stepwise Path": path}
+
         return FitResult("Stepwise(OLS)", f"{' + '.join(ys)} ~ {final_rhs}", models, summaries, metrics)
 
     if personality == "glm":
@@ -454,9 +572,10 @@ def fit_model(df: pd.DataFrame, y: Union[str, List[str]], effects: List[str], *,
     raise ValueError(f"Unsupported personality: {personality}")
 
 def fit_ols(df, y, effects, **kw):  return fit_model(df, y, effects, personality="standard_least_squares", **kw)
-def fit_stepwise(df, y, effects, direction="both", max_steps=50, **kw):
+def fit_stepwise(df, y, effects, direction="both", max_steps=50, entry_p=0.05, exit_p=0.10, selection_criterion='pvalue', initial_selected=None, **kw):
     return fit_model(df, y, effects, personality="stepwise",
-                     stepwise_direction=direction, max_steps=max_steps, **kw)
+                     stepwise_direction=direction, max_steps=max_steps,
+                     entry_p=entry_p, exit_p=exit_p, selection_criterion=selection_criterion, initial_selected=initial_selected, **kw)
 def fit_glm(df, y, effects, *, family, link=None, **kw):
     return fit_model(df, y, effects, personality="glm", family=family, link=link, **kw)
 def fit_generalized_regression(df, y, effects, l1_ratio=None, **kw):
