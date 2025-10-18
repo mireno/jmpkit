@@ -100,20 +100,8 @@ def jmp_distribution_report(df: pd.DataFrame, column: str, *, tag_fliers: bool =
     f_indices = list(s.index[f_mask.fillna(False)])
 
     # --- plots ---
-    # BEFORE (warns in non-interactive backends)
-    # fig_hist = plt.figure()
-    # plt.hist(x, bins="auto", density=True)
-    # grid = np.linspace(x.min(), x.max(), 200)
-    # plt.plot(grid, _normal_pdf(grid, mu_hat, sigma_mle))
-    # plt.axvline(float(np.median(x)), linewidth=1)
-    # plt.title(f"Distribution — {column}"); plt.xlabel(column); plt.ylabel("Density"); plt.show()
-
-    # fig_box = plt.figure()
-    # plt.boxplot(x, vert=True, whis=1.5, showfliers=True)
-    # plt.title(f"Box Plot — {column}"); plt.ylabel(column); plt.show()
-
-    # AFTER (backend-safe, no plt.show)
-    fig_hist, axh = plt.subplots()
+    # AFTER (backend-safe, no plt.show) — make figures MUCH THINNER
+    fig_hist, axh = plt.subplots(figsize=(4.0, 2.4), dpi=120)
     axh.hist(x, bins=30, density=True)
     grid = np.linspace(x.min(), x.max(), 200)
     axh.plot(grid, _normal_pdf(grid, mu_hat, sigma_mle))
@@ -121,11 +109,13 @@ def jmp_distribution_report(df: pd.DataFrame, column: str, *, tag_fliers: bool =
     axh.set_title(f"Distribution — {column}")
     axh.set_xlabel(column)
     axh.set_ylabel("Density")
+    fig_hist.tight_layout()
 
-    fig_box, axb = plt.subplots()
-    axb.boxplot(x, vert=True, whis=1.5, showfliers=True)
+    fig_box, axb = plt.subplots(figsize=(2.2, 2.4), dpi=120)  # same pixel resolution as histogram
+    axb.boxplot(x, vert=True, whis=1.5, showfliers=True, widths=0.5)
     axb.set_title(f"Box Plot — {column}")
     axb.set_ylabel(column)
+    fig_box.tight_layout()
 
     # --- Normality goodness-of-fit: Shapiro–Wilk & Anderson–Darling ---
     have_scipy = True
