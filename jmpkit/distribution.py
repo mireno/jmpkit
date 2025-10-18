@@ -4,6 +4,28 @@ import numpy as np, pandas as pd, matplotlib.pyplot as plt
 from math import sqrt, log, pi
 from .utils import display_dataframe_to_user
 
+# --- 4 significant-figures rounding for output values ---
+def _sig4(v):
+    import numpy as _np
+    # Leave booleans and integers untouched; round only real floats
+    if isinstance(v, (bool, _np.bool_)):
+        return v
+    if isinstance(v, (float, _np.floating)):
+        if _np.isfinite(v):
+            try:
+                return float(f"{float(v):.4g}")
+            except Exception:
+                return v
+        return v
+    return v
+
+def _round_df_sig4(df):
+    # Apply 4-sig-fig rounding elementwise to floats only
+    import pandas as _pd
+    import numpy as _np
+    return df.applymap(lambda x: _sig4(x))
+
+
 def _normal_pdf(x, mu, sigma):
     sigma = max(float(sigma), 1e-12)
     return (1.0 / (sigma * sqrt(2 * pi))) * np.exp(-0.5 * ((x - mu) / sigma) ** 2)
@@ -32,14 +54,16 @@ def jmp_distribution_report(df: pd.DataFrame, column: str, *, tag_fliers: bool =
 
     summary_df = pd.DataFrame({
         "Measure": ["Mean","Std Dev","Std Err Mean","Upper 95% Mean","Lower 95% Mean","N","N Missing"],
-        "Value":   [mean,std_sample,se_mean,ci[1],ci[0],int(n),int(n_missing)]
+        "Value":   [mean, std_sample, se_mean, ci[1], ci[0], int(n), int(n_missing)]
     })
+    summary_df = _round_df_sig4(summary_df)
 
     # --- quantiles (JMP-like order) ---
     qs = [1.0,0.995,0.975,0.95,0.90,0.75,0.50,0.25,0.10,0.05,0.025,0.01,0.005,0.0]
     labels = ["maximum","99.5%","97.5%","95.0%","90.0%","quartile","median","quartile",
               "10.0%","5.0%","2.5%","1.0%","0.5%","minimum"]
     quantiles_df = pd.DataFrame({"Quantile": labels, "Value": pd.Series(x).quantile(q=qs).to_numpy()})
+    quantiles_df = _round_df_sig4(quantiles_df)
 
     # --- normal MLE fit (mu, sigma) ---
     mu_hat = mean
@@ -48,21 +72,25 @@ def jmp_distribution_report(df: pd.DataFrame, column: str, *, tag_fliers: bool =
     z = 1.96
     fit_params_df = pd.DataFrame({
         "Parameter":["Location μ","Dispersion σ"],
-        "Estimate":[mu_hat,sigma_mle],
-        "Std Error":[se_mu,se_sigma],
+        "Estimate":[mu_hat, sigma_mle],
+        "Std Error":[se_mu, se_sigma],
         "Lower 95%":[mu_hat - z*se_mu, max(0.0, sigma_mle - z*se_sigma)],
         "Upper 95%":[mu_hat + z*se_mu, sigma_mle + z*se_sigma],
     })
+    fit_params_df = _round_df_sig4(fit_params_df)
 
     const = -0.5 * log(2 * pi * (sigma_mle ** 2))
     quad  = -0.5 * ((x - mu_hat) ** 2) / (sigma_mle ** 2)
     loglik = float(np.sum(const + quad)); k = 2
     fit_stats_df = pd.DataFrame({
         "Measure": ["-2*LogLikelihood", "AICc", "BIC"],
-        "Value":   [-2*loglik,
-                    (2*k - 2*loglik) + (2*k*(k+1))/(n - k - 1) if n > (k+1) else np.nan,
-                    (k*np.log(n) - 2*loglik)]
+        "Value":   [
+            -2*loglik,
+            (2*k - 2*loglik) + (2*k*(k+1))/(n - k - 1) if n > (k+1) else np.nan,
+            (k*np.log(n) - 2*loglik)
+        ]
     })
+    fit_stats_df = _round_df_sig4(fit_stats_df)
 
     # --- IQR-based fliers (JMP box-plot rule, 1.5*IQR) ---
     q1, q3 = np.nanpercentile(x, 25), np.nanpercentile(x, 75)
@@ -146,9 +174,10 @@ def jmp_distribution_report(df: pd.DataFrame, column: str, *, tag_fliers: bool =
          "Alpha": alpha, "Reject H0 (Normal)": shapiro_reject,
          "Note": shapiro_note},
         {"Test": "Anderson–Darling", "Statistic": ad_stat, "p_value": np.nan,
-         "Alpha": alpha, "Reject H0 (Normal)": ad_reject_at_5,
-         "Note": ad_note or "Reject if A² > critical value at 5%"}
+         "Alpha": alpha, "Reject H0 (5%)": ad_reject_at_5,
+         "Note": ad_note}
     ])
+    gof_summary_df = _round_df_sig4(gof_summary_df)
 
     # Detailed AD critical values table (if available)
     ad_details_df = pd.DataFrame({
@@ -157,6 +186,7 @@ def jmp_distribution_report(df: pd.DataFrame, column: str, *, tag_fliers: bool =
         "Reject H0 (A² > crit)": [ (ad_stat > cv) if np.isfinite(ad_stat) and np.isfinite(cv) else np.nan
                                    for cv in ad_crit ]
     })
+    ad_details_df = _round_df_sig4(ad_details_df)
 
     # --- show dataframes in Jupyter contexts (no-op in Streamlit) ---
     display_dataframe_to_user(f"{column} — Quantiles", quantiles_df)
@@ -179,7 +209,7 @@ def jmp_distribution_report(df: pd.DataFrame, column: str, *, tag_fliers: bool =
         quantiles_df=quantiles_df, summary_df=summary_df,
         fit_params_df=fit_params_df, fit_stats_df=fit_stats_df,
         gof_summary_df=gof_summary_df, ad_details_df=ad_details_df,
-        flier_bounds=(lo, hi), flier_index=f_indices
+        flier_bounds=(_sig4(lo), _sig4(hi)), flier_index=f_indices
     )
 
 def jmp_distribution_all(df: pd.DataFrame, columns=None):
