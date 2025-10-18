@@ -86,7 +86,7 @@ def jmp_distribution_report(df: pd.DataFrame, column: str, *, tag_fliers: bool =
 
     # AFTER (backend-safe, no plt.show)
     fig_hist, axh = plt.subplots()
-    axh.hist(x, bins="auto", density=True)
+    axh.hist(x, bins=30, density=True)
     grid = np.linspace(x.min(), x.max(), 200)
     axh.plot(grid, _normal_pdf(grid, mu_hat, sigma_mle))
     axh.axvline(float(np.median(x)), linewidth=1)
